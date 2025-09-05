@@ -80,5 +80,3 @@ for doczip in root.xphat("//ns:docZip", namespaces={"ns": "http://www.portalfisc
             f.write(conteudo_xml)
             print(f"Arquivo salvo: {nome_arquivo}")
 
-
-print("teste") 
