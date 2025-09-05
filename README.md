@@ -1,8 +1,5 @@
-# API-Pr-saude
+# API-Pr-saude 
 
-# ## Tecnologias
+## Tecnologias
 
-Este projeto foi desenvolvido **exclusivamente com Python**. As bibliotecas e ferramentas utilizadas incluem:
-
-* **[Nome da Biblioteca]**
-* **[Nome da outra Biblioteca]** requests
+Este projeto foi desenvolvido utilizando a linguagem **Python** e a biblioteca **requests** para fazer requisições HTTP e consumir uma API 
