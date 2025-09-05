@@ -5,29 +5,40 @@ import base64
 import os
 from datetime import datetime
 
-# Configurações do certificado e empresa
-CERT_PATH = "certificado.pfx"
-CERT_PASS = "senha_do_certificado"
-CNPJ = "12345678000195"
+# ===================== CONFIGURAÇÕES =====================
+
+CERT_PATH = r'C:\Users\bruno.sousa\Desktop\certificado.pfx\PRO_SAUDE_ASSOCIACAO_BENEFICENTE_DE_ASSISTENCIA_S_24232886000167_17163983676899473001.pfx'
+CERT_PASS = '123456'  
+CNPJ ="24232886002020"
+
 URL_DFE = "https://www1.nfe.fazenda.gov.br/NFeDistribuicaoDFe/NFeDistribuicaoDFe.asmx"
 
-# Período desejado (exemplo: Julho/2023)
+# Período de filtro
 DATA_INICIAL = datetime(2023, 7, 1)
-DATA_FINAL   = datetime(2023, 7, 31)
+DATA_FINAL = datetime(2023, 7, 31)
 
-# Pasta de saída
+# Pastas
 PASTA_SAIDA = "notas_xml"
-os.makedirs(PASTA_SAIDA, exist_ok=True)
+PASTA_NFE = os.path.join(PASTA_SAIDA, "nfe")
+os.makedirs(PASTA_NFE, exist_ok=True)
 
-# Requisição inicial (pelo último NSU = vai varrer todas notas disponíveis)
-xml_request = f"""<?xml version="1.0" encoding="utf-8"?>
-<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
-  <soap:Body>
+# ===================== MONTAR XML DE CONSULTA =====================
+
+headers = {
+    "Content-Type": "text/xml; charset=utf-8",
+    "SOAPAction": "http://www.portalfiscal.inf.br/nfe/wsdl/NFeDistribuicaoDFe/nfeDistDFeInteresse"
+}
+
+soap_body = f"""<?xml version="1.0" encoding="utf-8"?>
+<soap12:Envelope xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+                 xmlns:xsd="http://www.w3.org/2001/XMLSchema"
+                 xmlns:soap12="http://www.w3.org/2003/05/soap-envelope">
+  <soap12:Body>
     <nfeDistDFeInteresse xmlns="http://www.portalfiscal.inf.br/nfe/wsdl/NFeDistribuicaoDFe">
       <nfeDadosMsg>
         <distDFeInt xmlns="http://www.portalfiscal.inf.br/nfe" versao="1.01">
-          <tpAmb>1</tpAmb>        <!-- 1 = Produção / 2 = Homologação -->
-          <cUFAutor>35</cUFAutor> <!-- UF da empresa (35 = SP) -->
+          <tpAmb>1</tpAmb>
+          <cUFAutor>41</cUFAutor> <!-- 41 = PR (Paraná). Altere se for outro estado -->
           <CNPJ>{CNPJ}</CNPJ>
           <distNSU>
             <ultNSU>000000000000000</ultNSU>
@@ -35,50 +46,56 @@ xml_request = f"""<?xml version="1.0" encoding="utf-8"?>
         </distDFeInt>
       </nfeDadosMsg>
     </nfeDistDFeInteresse>
-  </soap:Body>
-</soap:Envelope>"""
+  </soap12:Body>
+</soap12:Envelope>
+"""
 
-headers = {
-    "Content-Type": "text/xml; charset=utf-8",
-    "SOAPAction": "http://www.portalfiscal.inf.br/nfe/wsdl/NFeDistribuicaoDFe/nfeDistDFeInteresse"
-}
+# ===================== ENVIAR REQUISIÇÃO =====================
 
-# Sessão com certificado digital
 session = requests.Session()
 session.mount("https://", Pkcs12Adapter(pkcs12_filename=CERT_PATH, pkcs12_password=CERT_PASS))
 
-print("🔎 Buscando notas no período:", DATA_INICIAL.date(), "até", DATA_FINAL.date())
+print("⏳ Consultando SEFAZ...")
+response = session.post(URL_DFE, data=soap_body.encode("utf-8"), headers=headers)
 
-# Faz requisição
-response = session.post(URL_DFE, data=xml_request.encode("utf-8"), headers=headers)
-root = ET.fromstring(response.text)
+if response.status_code != 200:
+    print("❌ Erro ao consultar SEFAZ:", response.status_code)
+    print(response.text)
+    exit()
 
-qtd_salvas = 0
+# ===================== PROCESSAR RESPOSTA =====================
 
-# Extrai as notas
-for docZip in root.findall(".//{http://www.portalfiscal.inf.br/nfe}docZip"):
-    conteudo_xml = base64.b64decode(docZip.text).decode("utf-8")
+root = ET.fromstring(response.content)
 
-    try:
-        xml_nfe = ET.fromstring(conteudo_xml)
+total_salvas = 0
 
-        # Busca data de emissão
-        dhEmi = xml_nfe.find(".//{http://www.portalfiscal.inf.br/nfe}dhEmi")
-        if dhEmi is not None:
-            data_emissao = datetime.fromisoformat(dhEmi.text.replace("Z", "+00:00"))
+for doc_zip in root.findall(".//{http://www.portalfiscal.inf.br/nfe}docZip"):
+    nsu = doc_zip.attrib.get("NSU", "sem_nsu")
+    tipo = doc_zip.attrib.get("schema", "outros")
+    conteudo = base64.b64decode(doc_zip.text)
 
-            # Filtra pelo período
+    # Apenas NFe
+    if "nfeproc" in tipo.lower():
+        try:
+            xml_root = ET.fromstring(conteudo)
+            ns = {'nfe': 'http://www.portalfiscal.inf.br/nfe'}
+
+            # Tenta pegar a data de emissão
+            dhEmi = xml_root.find(".//nfe:dhEmi", ns)
+            if dhEmi is None:
+                continue
+
+            data_emissao = datetime.fromisoformat(dhEmi.text[:19])
+
             if DATA_INICIAL <= data_emissao <= DATA_FINAL:
-                chave = xml_nfe.find(".//{http://www.portalfiscal.inf.br/nfe}infNFe").attrib.get("Id", "NFeSemChave")
-                arquivo = os.path.join(PASTA_SAIDA, f"{chave}.xml")
+                # Salvar o XML
+                caminho_xml = os.path.join(PASTA_NFE, f"{nsu}.xml")
+                with open(caminho_xml, "wb") as f:
+                    f.write(conteudo)
+                print(f"📄 NF-e salva: {caminho_xml}")
+                total_salvas += 1
 
-                with open(arquivo, "w", encoding="utf-8") as f:
-                    f.write(conteudo_xml)
+        except Exception as e:
+            print(f"⚠️ Erro ao processar NSU {nsu}: {e}")
 
-                qtd_salvas += 1
-                print(f"✅ NFe salva: {arquivo} (Data emissão: {data_emissao.date()})")
-
-    except Exception as e:
-        print("⚠️ Erro ao processar XML:", e)
-
-print(f"\n📂 Processo concluído! {qtd_salvas} notas salvas em '{PASTA_SAIDA}'")
+print(f"\n✅ Consulta finalizada. {total_salvas} NF-e(s) salvas no período de {DATA_INICIAL.date()} a {DATA_FINAL.date()}.")
